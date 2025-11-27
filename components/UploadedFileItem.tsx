@@ -5,14 +5,14 @@ import { FileTextIcon, EyeIcon } from './Icons';
 
 interface UploadedFileItemProps {
   file: Attachment & { id: number };
-  onPreview: () => void;
+  onViewDetails: () => void;
 }
 
-export const UploadedFileItem: React.FC<UploadedFileItemProps> = ({ file, onPreview }) => {
+export const UploadedFileItem: React.FC<UploadedFileItemProps> = ({ file, onViewDetails }) => {
   return (
     <li>
       <button 
-        onClick={onPreview}
+        onClick={onViewDetails}
         className="w-full flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
       >
           <div className="flex items-center gap-3 text-left">
@@ -22,8 +22,9 @@ export const UploadedFileItem: React.FC<UploadedFileItemProps> = ({ file, onPrev
                   <p className="text-xs text-gray-500">{file.size}</p>
               </div>
           </div>
-          <div className="p-2 text-gray-500">
+          <div className="p-2 text-gray-500 flex items-center gap-1 text-xs font-semibold">
               <EyeIcon className="w-5 h-5" />
+              <span>View</span>
           </div>
       </button>
     </li>

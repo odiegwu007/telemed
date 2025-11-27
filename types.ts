@@ -11,6 +11,8 @@ export interface Appointment {
   reason: string;
   patientId?: string;
   doctorId?: string;
+  notes?: string;
+  offer?: RTCSessionDescriptionInit;
 }
 
 export interface NewAppointmentDetails {

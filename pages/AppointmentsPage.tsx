@@ -13,6 +13,8 @@ interface AppointmentsPageProps {
 }
 
 export const AppointmentsPage: React.FC<AppointmentsPageProps> = ({ appointments, userRole, setActivePage, onSelectAppointment }) => {
+  const sortedAppointments = [...appointments].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
   return (
     <div className="space-y-6">
         {userRole === 'patient' && (
@@ -26,9 +28,9 @@ export const AppointmentsPage: React.FC<AppointmentsPageProps> = ({ appointments
             </div>
         )}
 
-        {appointments.length > 0 ? (
+        {sortedAppointments.length > 0 ? (
             <div className="space-y-4">
-                {appointments.map(app => (
+                {sortedAppointments.map(app => (
                     userRole === 'patient' 
                         ? (
                             <button key={app.id} onClick={() => onSelectAppointment(app.id)} className="w-full text-left hover:opacity-90 transition-opacity">
@@ -43,7 +45,7 @@ export const AppointmentsPage: React.FC<AppointmentsPageProps> = ({ appointments
                 <h3 className="text-xl font-semibold text-gray-700">No Appointments Found</h3>
                 <p className="text-gray-500 mt-2">
                     {userRole === 'patient' 
-                        ? "You have no upcoming appointments scheduled." 
+                        ? "You have no upcoming or past appointments scheduled." 
                         : "There are no appointments in your schedule."
                     }
                 </p>

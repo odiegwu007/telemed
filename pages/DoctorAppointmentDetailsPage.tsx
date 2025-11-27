@@ -19,8 +19,8 @@ interface DoctorAppointmentDetailsPageProps {
   onSendMessage: (newMessage: Omit<Message, 'id' | 'created_at'>) => void;
   onBack: () => void;
   onStartCall: (appointment: Appointment) => void;
-  onPrescribe: (data: any, patientId: string, doctorId: string, appointmentId: number) => void;
-  onOrderLab: (data: any, patientId: string, doctorId: string, appointmentId: number) => void;
+  onPrescribe: (data: any, appointment: Appointment) => void;
+  onOrderLab: (data: any, appointment: Appointment) => void;
 }
 
 const SummaryPrescriptionItem: React.FC<{ prescription: Prescription }> = ({ prescription }) => (
@@ -52,19 +52,17 @@ export const DoctorAppointmentDetailsPage: React.FC<DoctorAppointmentDetailsPage
     size: msg.attachment_size || '0 MB'
   })).filter(msg => msg.name !== 'Unnamed File');
 
-  const handlePreviewFile = (file: Attachment) => setSelectedFile(file);
+  const handleViewFileDetails = (file: Attachment) => setSelectedFile(file);
   const handleCloseModal = () => setSelectedFile(null);
   const handleViewResults = (order: LabOrder) => setSelectedLabOrder(order);
 
   const handlePrescribeSubmit = (data: any) => {
-    if (!appointment.patientId || !appointment.doctorId) return;
-    onPrescribe(data, appointment.patientId, appointment.doctorId, appointment.id);
+    onPrescribe(data, appointment);
     setPrescriptionModalOpen(false);
   };
 
   const handleOrderLabSubmit = (data: any) => {
-    if (!appointment.patientId || !appointment.doctorId) return;
-    onOrderLab(data, appointment.patientId, appointment.doctorId, appointment.id);
+    onOrderLab(data, appointment);
     setLabModalOpen(false);
   };
 
@@ -122,6 +120,10 @@ export const DoctorAppointmentDetailsPage: React.FC<DoctorAppointmentDetailsPage
                   <h4 className="font-semibold text-gray-700 mb-2">Reason for Visit</h4>
                   <p className="text-sm text-gray-600">{appointment.reason}</p>
               </div>
+               <div className="mt-6 pt-6 border-t border-gray-200">
+                    <h4 className="font-semibold text-gray-700 mb-2">Consultation Notes</h4>
+                    <p className="text-sm text-gray-600 whitespace-pre-wrap">{appointment.notes || 'No notes have been added for this consultation.'}</p>
+                </div>
             </div>
 
             {/* Prescriptions Issued */}
@@ -158,7 +160,7 @@ export const DoctorAppointmentDetailsPage: React.FC<DoctorAppointmentDetailsPage
               {attachments.length > 0 ? (
                   <ul className="space-y-3">
                       {attachments.map(file => (
-                          <UploadedFileItem key={file.id} file={file} onPreview={() => handlePreviewFile(file)} />
+                          <UploadedFileItem key={file.id} file={file} onViewDetails={() => handleViewFileDetails(file)} />
                       ))}
                   </ul>
               ) : (
