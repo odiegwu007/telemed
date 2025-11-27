@@ -78,8 +78,84 @@ const App: React.FC = () => {
     }
   }, [session]);
 
+  const fetchAllData = useCallback(async (currentProfile: Profile) => {
+      if (!currentProfile) return;
+      const isPatient = currentProfile.role === 'patient';
+      
+      const appointmentQuery = supabase.from('appointments').select(`
+        id, date, reason, patient_id, doctor_id,
+        doctor:doctor_id ( id, full_name, specialty, avatar_url ),
+        patient:patient_id ( id, full_name, avatar_url )
+      `);
+      const { data: appointmentData, error: appointmentError } = await (isPatient 
+        ? appointmentQuery.eq('patient_id', currentProfile.id)
+        : appointmentQuery.eq('doctor_id', currentProfile.id));
+
+      if (appointmentError) {
+        console.error('Error fetching appointments:', appointmentError);
+      } else if (appointmentData) {
+        const processedAppointments = appointmentData.map((a: any) => {
+          // This logic handles cases where RLS policies might prevent joining patient/doctor profiles.
+          if (!a.doctor) {
+            // Every valid appointment must have a doctor.
+            return null;
+          }
+          if (isPatient && !a.patient) {
+            // For a patient's own view, their profile should be visible. If not, something is wrong.
+            // We can use the current profile as a fallback.
+            a.patient = currentProfile;
+          }
+
+          return {
+            id: a.id,
+            doctorName: a.doctor.full_name,
+            patientName: a.patient ? a.patient.full_name : `Patient (${a.patient_id.slice(0, 8)})`,
+            specialty: a.doctor.specialty,
+            avatarUrl: isPatient ? a.doctor.avatar_url : (a.patient ? a.patient.avatar_url : `https://xsgames.co/randomusers/assets/avatars/pixel/7.jpg`), // Generic fallback
+            date: a.date,
+            reason: a.reason,
+            patientId: a.patient_id,
+            doctorId: a.doctor_id,
+          };
+        }).filter(Boolean); // Remove any null entries
+
+        setAppointments(processedAppointments as Appointment[]);
+
+        const appointmentIds = processedAppointments.map(a => a.id);
+        if (appointmentIds.length > 0) {
+            const { data: messagesData } = await supabase.from('messages').select('*').in('appointment_id', appointmentIds);
+            setMessages((messagesData as Message[]) || []);
+        } else {
+            setMessages([]);
+        }
+      }
+      
+      const presQueryCol = isPatient ? 'patient_id' : 'doctor_id';
+      const { data: prescriptionsData } = await supabase.from('prescriptions').select(`*, doctor:doctor_id(full_name), patient:patient_id(full_name)`).eq(presQueryCol, currentProfile.id);
+      const validPrescriptions = prescriptionsData?.filter((p: any) => p.doctor && p.patient) || [];
+      setPrescriptions(validPrescriptions.map((p: any) => ({...p, doctorName: p.doctor.full_name, patientName: p.patient.full_name})));
+      
+      const labQueryCol = isPatient ? 'patient_id' : 'doctor_id';
+      const { data: labOrdersData } = await supabase.from('lab_orders').select(`*, doctor:doctor_id(full_name), patient:patient_id(full_name)`).eq(labQueryCol, currentProfile.id);
+      const validLabOrders = labOrdersData?.filter((l: any) => l.patient) || [];
+      setLabOrders(validLabOrders.map((l: any) => ({...l, doctorName: l.doctor?.full_name || 'Pending Review', patientName: l.patient.full_name})));
+      
+      const { data: notificationsData } = await supabase.from('notifications').select('*').eq('user_id', currentProfile.id).order('created_at', { ascending: false });
+      setNotifications((notificationsData as Notification[]) || []);
+
+      if (isPatient) {
+        const { data: doctorsData, error: doctorsError } = await supabase.from('profiles').select('*').eq('role', 'doctor');
+        if (doctorsError) console.error('Error fetching doctors:', doctorsError);
+        else setDoctors(doctorsData || []);
+      }
+  }, []);
+
   useEffect(() => {
-    if (!session?.user?.id) return;
+    if (!session?.user?.id || !profile) return;
+    
+    const appointmentFilter = profile.role === 'doctor' 
+        ? `doctor_id=eq.${profile.id}` 
+        : `patient_id=eq.${profile.id}`;
 
     const channels = supabase
       .channel('realtime-changes')
@@ -91,20 +167,31 @@ const App: React.FC = () => {
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
         const newMessage = payload.new as any;
-        const { data } = await supabase.from('appointments').select('id').or(`patient_id.eq.${session.user.id},doctor_id.eq.${session.user.id}`);
-        const userAppointmentIds = data?.map(a => a.id) || [];
-        if (userAppointmentIds.includes(newMessage.appointment_id)) {
-            setMessages(prev => [...prev, newMessage]);
+        // Check if the message is from the *other* user to avoid duplicates from optimistic updates
+        if (newMessage.sender_id !== session.user.id) {
+          const { data } = await supabase.from('appointments').select('id').or(`patient_id.eq.${session.user.id},doctor_id.eq.${session.user.id}`);
+          const userAppointmentIds = data?.map(a => a.id) || [];
+          if (userAppointmentIds.includes(newMessage.appointment_id)) {
+              setMessages(prev => [...prev, newMessage]);
+          }
         }
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'appointments',
+        filter: appointmentFilter
+      }, (payload) => {
+        fetchAllData(profile);
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channels);
     };
-  }, [session]);
+  }, [session, profile, fetchAllData]);
 
-  const fetchProfileAndData = async () => {
+  const fetchProfileAndData = useCallback(async () => {
     if (!session?.user) return;
     setLoading(true);
     const { data: profileData, error: profileError } = await supabase
@@ -121,59 +208,7 @@ const App: React.FC = () => {
       await fetchAllData(profileData);
     }
     setLoading(false);
-  };
-
-  const fetchAllData = async (currentProfile: Profile) => {
-      if (!currentProfile) return;
-      const isPatient = currentProfile.role === 'patient';
-      
-      const appointmentQuery = supabase.from('appointments').select(`
-        id, date, reason,
-        doctor:doctor_id ( id, full_name, specialty, avatar_url ),
-        patient:patient_id ( id, full_name, avatar_url )
-      `);
-      const { data: appointmentData, error: appointmentError } = await (isPatient 
-        ? appointmentQuery.eq('patient_id', currentProfile.id)
-        : appointmentQuery.eq('doctor_id', currentProfile.id));
-
-      if (appointmentError) console.error('Error fetching appointments:', appointmentError);
-      else if (appointmentData) {
-        setAppointments(appointmentData.map((a: any) => ({
-          id: a.id,
-          doctorName: a.doctor.full_name,
-          patientName: a.patient.full_name,
-          specialty: a.doctor.specialty,
-          avatarUrl: isPatient ? a.doctor.avatar_url : a.patient.avatar_url,
-          date: a.date,
-          reason: a.reason,
-          patientId: a.patient.id,
-          doctorId: a.doctor.id
-        })));
-
-        const appointmentIds = appointmentData.map(a => a.id);
-        if (appointmentIds.length > 0) {
-            const { data: messagesData } = await supabase.from('messages').select('*').in('appointment_id', appointmentIds);
-            setMessages((messagesData as Message[]) || []);
-        }
-      }
-      
-      const presQueryCol = isPatient ? 'patient_id' : 'doctor_id';
-      const { data: prescriptionsData } = await supabase.from('prescriptions').select(`*, doctor:doctor_id(full_name), patient:patient_id(full_name)`).eq(presQueryCol, currentProfile.id);
-      setPrescriptions(prescriptionsData?.map((p: any) => ({...p, doctorName: p.doctor.full_name, patientName: p.patient.full_name})) || []);
-      
-      const labQueryCol = isPatient ? 'patient_id' : 'doctor_id';
-      const { data: labOrdersData } = await supabase.from('lab_orders').select(`*, doctor:doctor_id(full_name), patient:patient_id(full_name)`).eq(labQueryCol, currentProfile.id);
-      setLabOrders(labOrdersData?.map((l: any) => ({...l, doctorName: l.doctor?.full_name || 'Pending Review', patientName: l.patient.full_name})) || []);
-      
-      const { data: notificationsData } = await supabase.from('notifications').select('*').eq('user_id', currentProfile.id).order('created_at', { ascending: false });
-      setNotifications((notificationsData as Notification[]) || []);
-
-      if (isPatient) {
-        const { data: doctorsData, error: doctorsError } = await supabase.from('profiles').select('*').eq('role', 'doctor');
-        if (doctorsError) console.error('Error fetching doctors:', doctorsError);
-        else setDoctors(doctorsData || []);
-      }
-  };
+  }, [session, fetchAllData]);
   
     const handleLogout = async () => {
         await supabase.auth.signOut();
@@ -211,38 +246,72 @@ const App: React.FC = () => {
                    attachment_size: details.attachment.size,
                });
            }
-           fetchProfileAndData();
+           if (profile) fetchAllData(profile);
            setActivePage('Appointments');
        }
     };
   
     const handleSendMessage = async (newMessage: Omit<Message, 'id' | 'created_at'>) => {
-        const { error } = await supabase.from('messages').insert({ ...newMessage, sender_id: session?.user.id });
-        if(error) console.error("Error sending message", error);
+        if (!session?.user?.id) return;
+        const { data, error } = await supabase
+          .from('messages')
+          .insert({ ...newMessage, sender_id: session.user.id })
+          .select()
+          .single();
+        
+        if (error) {
+            console.error("Error sending message", error);
+        } else if (data) {
+            setMessages(prev => [...prev, data]);
+        }
     };
 
-    const handlePrescribe = async (prescriptionData: any, patientId: string, doctorId: string, appointmentId: number) => {
-        const { error } = await supabase.from('prescriptions').insert({
+    const handlePrescribe = async (prescriptionData: any, appointment: Appointment) => {
+        if (!appointment.patientId || !appointment.doctorId) return;
+
+        const { data, error } = await supabase.from('prescriptions').insert({
             ...prescriptionData,
-            patient_id: patientId,
-            doctor_id: doctorId,
-            appointment_id: appointmentId,
+            patient_id: appointment.patientId,
+            doctor_id: appointment.doctorId,
+            appointment_id: appointment.id,
             status: 'Active',
-        });
-        if (error) console.error('Error prescribing:', error);
-        else fetchProfileAndData();
+            date_issued: new Date().toISOString(),
+        }).select().single();
+
+        if (error) {
+            console.error('Error prescribing:', error);
+        } else if (data) {
+            const newPrescription: Prescription = {
+                ...(data as Prescription),
+                doctorName: appointment.doctorName,
+                patientName: appointment.patientName,
+            };
+            setPrescriptions(prev => [...prev, newPrescription]);
+        }
     };
 
-    const handleOrderLab = async (labOrderData: any, patientId: string, doctorId: string, appointmentId: number) => {
-        const { error } = await supabase.from('lab_orders').insert({
+    const handleOrderLab = async (labOrderData: any, appointment: Appointment) => {
+        if (!appointment.patientId || !appointment.doctorId) return;
+        
+        const { data, error } = await supabase.from('lab_orders').insert({
             ...labOrderData,
-            patient_id: patientId,
-            doctor_id: doctorId,
-            appointment_id: appointmentId,
+            patient_id: appointment.patientId,
+            doctor_id: appointment.doctorId,
+            appointment_id: appointment.id,
             status: 'Ordered',
-        });
-        if (error) console.error('Error ordering lab:', error);
-        else fetchProfileAndData();
+            date_ordered: new Date().toISOString(),
+        }).select().single();
+
+        if (error) {
+            console.error('Error ordering lab:', error);
+        } else if (data) {
+            const newLabOrder: LabOrder = {
+                ...(data as LabOrder),
+                doctorName: appointment.doctorName,
+                patientName: appointment.patientName,
+            };
+            setLabOrders(prev => [...prev, newLabOrder]);
+        }
     };
     
     const handleRequestLabTest = async (data: { testName: string; reason: string; }) => {
@@ -254,7 +323,7 @@ const App: React.FC = () => {
             status: 'Ordered',
         });
         if (error) console.error('Error requesting lab test:', error);
-        else fetchProfileAndData();
+        else fetchAllData(profile);
     };
 
     const handleSelectAppointment = (appointmentId: number) => {
@@ -329,8 +398,8 @@ const App: React.FC = () => {
                   onSendMessage={handleSendMessage}
                   onBack={handleBackToAppointments}
                   onStartCall={handleStartCall}
-                  onPrescribe={(data) => handlePrescribe(data, selectedAppointment.patientId!, selectedAppointment.doctorId!, selectedAppointment.id)}
-                  onOrderLab={(data) => handleOrderLab(data, selectedAppointment.patientId!, selectedAppointment.doctorId!, selectedAppointment.id)}
+                  onPrescribe={(data) => handlePrescribe(data, selectedAppointment)}
+                  onOrderLab={(data) => handleOrderLab(data, selectedAppointment)}
               />
           }
            if (profile?.role === 'patient') {
